@@ -24,7 +24,7 @@ import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
-from modules.data_fetcher import IBKRDataFetcher, get_fetcher
+from modules.data_fetcher import YFinanceFetcher, get_fetcher
 from modules.gamma_engine import GammaEngine, GammaResult
 from modules.bias_engine import BiasEngine, BiasResult
 from modules.flow_engine import FlowEngine, FlowResult
