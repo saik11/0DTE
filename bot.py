@@ -104,7 +104,7 @@ async def _fetch_all(ticker: str, zero_dte: bool = True):
 
     snapshot = await fetcher.get_chain(ticker, zero_dte_only=zero_dte)
     if not snapshot:
-        raise RuntimeError(f"Could not fetch data for {ticker}. IBKR may be disconnected.")
+        raise RuntimeError(f"Could not fetch data for {ticker}. The data source may be offline.")
 
     atr = await fetcher.atr(ticker)
     gamma_engine.atr = atr
@@ -163,7 +163,7 @@ def build_bias_embed(bias: BiasResult) -> discord.Embed:
         for s in bias.signals
     )
     embed.add_field(name="Signal Breakdown", value=f"```{breakdown}```", inline=False)
-    embed.set_footer(text=f"Spot ${bias.spot:.2f}  ·  {_ibkr_status()}")
+    embed.set_footer(text=f"Spot ${bias.spot:.2f}")
     return embed
 
 
@@ -205,11 +205,34 @@ def build_gamma_embed(gamma: GammaResult) -> discord.Embed:
                     inline=True)
     embed.add_field(name="ATR",         value=f"${gamma.atr:.2f}", inline=True)
 
-    if gamma.pin_zones:
-        zones = "  |  ".join(f"${z[0]:.1f}–${z[1]:.1f}" for z in gamma.pin_zones)
-        embed.add_field(name="📌 Pin Zones", value=zones, inline=False)
 
-    embed.set_footer(text=f"Spot ${gamma.spot:.2f}  ·  {_ibkr_status()}")
+
+    # IV Walls and Expected Range
+    if gamma.expected_move:
+        em = gamma.expected_move
+        embed.add_field(
+            name="📐 1-Day Expected Move Range",
+            value=f"Expected Move: **±${em.expected_move:.2f}**\n"
+                  f"Range: **${em.lower_bound:.2f}** – **${em.upper_bound:.2f}**\n"
+                  f"Expected Move Walls: Put **${fmt_strike(em.closest_put_strike)}** | Call **${fmt_strike(em.closest_call_strike)}**",
+            inline=False
+        )
+
+    if gamma.iv_call_wall or gamma.iv_put_wall:
+        iv_lines = []
+        if gamma.iv_call_wall:
+            cw = gamma.iv_call_wall
+            iv_lines.append(f"🟢 **Call IV Wall**: **${fmt_strike(cw.strike)}** (IV: {cw.iv:.1%}, OI: {cw.oi:,})")
+        if gamma.iv_put_wall:
+            pw = gamma.iv_put_wall
+            iv_lines.append(f"🔴 **Put IV Wall**: **${fmt_strike(pw.strike)}** (IV: {pw.iv:.1%}, OI: {pw.oi:,})")
+        embed.add_field(
+            name="⚡ Volatility Skew Walls (OTM Boundaries)",
+            value="\n".join(iv_lines),
+            inline=False
+        )
+
+    embed.set_footer(text=f"Spot ${gamma.spot:.2f}")
     return embed
 
 
@@ -253,7 +276,7 @@ def build_flow_embed(flow: FlowResult) -> discord.Embed:
         hm_str = "  ".join(f"**{s:.0f}** `{v:.0f}`" for s, v in top5)
         embed.add_field(name="🌡️ Liquidity Heatmap (top strikes)", value=hm_str, inline=False)
 
-    embed.set_footer(text=f"Spot ${flow.spot:.2f}  ·  {_ibkr_status()}")
+    embed.set_footer(text=f"Spot ${flow.spot:.2f}")
     return embed
 
 
@@ -290,9 +313,7 @@ def build_full_embed(
     levels = []
     if gamma.max_pain:   levels.append(f"Max Pain: **${fmt_strike(gamma.max_pain)}**")
     if gamma.gamma_flip: levels.append(f"Gamma Flip: **${fmt_strike(gamma.gamma_flip)}**")
-    if gamma.pin_zones:
-        pz = " | ".join(f"${z[0]:.1f}–${z[1]:.1f}" for z in gamma.pin_zones)
-        levels.append(f"Pin Zones: {pz}")
+
     if levels:
         embed.add_field(name="🎯 Key Levels", value="  ·  ".join(levels), inline=False)
 
@@ -305,12 +326,24 @@ def build_full_embed(
     embed.add_field(name="Trend",        value=f"{flow.trend_bias} {flow.trend_probability:.0%}", inline=True)
     embed.add_field(name="ATR",          value=f"${gamma.atr:.2f}", inline=True)
 
-    embed.set_footer(text=f"0DTE Dashboard  ·  {_ibkr_status()}")
+    # Volatility / Expected Move Boundaries
+    if gamma.expected_move or gamma.iv_call_wall or gamma.iv_put_wall:
+        v_lines = []
+        if gamma.expected_move:
+            em = gamma.expected_move
+            v_lines.append(f"📐 **Expected Move**: ±${em.expected_move:.2f} (${em.lower_bound:.2f} – ${em.upper_bound:.2f})")
+            v_lines.append(f"   ↳ Range Boundary Walls: Put **${fmt_strike(em.closest_put_strike)}** | Call **${fmt_strike(em.closest_call_strike)}**")
+        if gamma.iv_call_wall or gamma.iv_put_wall:
+            iv_w = []
+            if gamma.iv_call_wall:
+                iv_w.append(f"🟢 Call **${fmt_strike(gamma.iv_call_wall.strike)}**")
+            if gamma.iv_put_wall:
+                iv_w.append(f"🔴 Put **${fmt_strike(gamma.iv_put_wall.strike)}**")
+            v_lines.append(f"⚡ **IV Skew Boundaries**: " + " | ".join(iv_w))
+        embed.add_field(name="📐 Volatility & Expected Range", value="\n".join(v_lines), inline=False)
+
+    embed.set_footer(text="0DTE Dashboard")
     return embed
-
-
-def _ibkr_status() -> str:
-    return "🟢 yfinance Live"
 
 
 def _error_embed(title: str, description: str) -> discord.Embed:
@@ -428,18 +461,33 @@ async def cmd_0dte(ctx: commands.Context, ticker: str = "SPY"):
                 lines = [f"{s.severity} `{s.strike:.0f}` — {s.detail[:60]}" for s in high_sev]
                 embed.add_field(name="🚨 High-Sev Signals", value="\n".join(lines), inline=False)
 
-            pin = gamma.pin_zones
-            if pin:
+
+
+            if gamma.expected_move:
+                em = gamma.expected_move
                 embed.add_field(
-                    name="📌 Pin Zones",
-                    value="  ·  ".join(f"${z[0]:.1f}–${z[1]:.1f}" for z in pin),
-                    inline=False,
+                    name="📐 Expected Move Range",
+                    value=f"**±${em.expected_move:.2f}** (${em.lower_bound:.2f} – ${em.upper_bound:.2f})\n"
+                          f"Range Walls: Put **${fmt_strike(em.closest_put_strike)}** | Call **${fmt_strike(em.closest_call_strike)}**",
+                    inline=False
+                )
+
+            if gamma.iv_call_wall or gamma.iv_put_wall:
+                iv_w = []
+                if gamma.iv_call_wall:
+                    iv_w.append(f"🟢 Call **${fmt_strike(gamma.iv_call_wall.strike)}** (IV {gamma.iv_call_wall.iv:.1%})")
+                if gamma.iv_put_wall:
+                    iv_w.append(f"🔴 Put **${fmt_strike(gamma.iv_put_wall.strike)}** (IV {gamma.iv_put_wall.iv:.1%})")
+                embed.add_field(
+                    name="⚡ IV Skew Walls",
+                    value="  ·  ".join(iv_w),
+                    inline=False
                 )
 
             embed.add_field(name="Max Pain", value=f"${fmt_strike(gamma.max_pain)}", inline=True)
             embed.add_field(name="ATR",      value=f"${gamma.atr:.2f}",             inline=True)
             embed.add_field(name="Trend",    value=f"{flow.trend_bias} {flow.trend_probability:.0%}", inline=True)
-            embed.set_footer(text=f"⚡ Real-time 0DTE  ·  {_ibkr_status()}")
+            embed.set_footer(text="⚡ Real-time 0DTE")
             await ctx.send(embed=embed)
 
         except Exception as e:
@@ -471,10 +519,9 @@ async def cmd_stats(ctx: commands.Context, ticker: str = "SPY", days: int = 30):
 async def cmd_ping(ctx: commands.Context):
     """!ping — Health check"""
     latency = round(bot.latency * 1000)
-    status  = _ibkr_status()
     embed = discord.Embed(
         title="🏓 Pong!",
-        description=f"Latency: **{latency}ms**\nIBKR: {status}",
+        description=f"Latency: **{latency}ms**",
         color=C_BULL if fetcher.is_connected else C_NEUT,
     )
     await ctx.send(embed=embed)
@@ -572,7 +619,7 @@ async def on_ready():
     # Init database
     await db.init()
 
-    # Connect to IBKR (non-blocking — bot works in demo mode if unavailable)
+    # Initialize the data fetcher (non-blocking)
     asyncio.create_task(fetcher.connect())
 
     # Start background tasks

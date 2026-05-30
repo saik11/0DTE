@@ -1,7 +1,7 @@
 """
 data_fetcher.py  (yfinance edition)
 ────────────────────────────────────
-Replaces the IBKR engine with yfinance.
+Uses yfinance engine.
 All dataclass interfaces (OptionRow, UnderlyingSnapshot, ChainSnapshot)
 are identical — gamma_engine, bias_engine, flow_engine, bot.py unchanged.
 
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 CACHE_TTL = int(os.getenv("CACHE_TTL", 45))
 
 
-# ─── Data containers (identical to IBKR version) ─────────────────────────────
+# ─── Data containers ─────────────────────────────────────────────────────────
 @dataclass
 class OptionRow:
     strike: float
@@ -153,7 +153,7 @@ def _t_years(expiry_str: str) -> float:
 # ─── yfinance fetcher ─────────────────────────────────────────────────────────
 class YFinanceFetcher:
     """
-    Drop-in replacement for IBKRDataFetcher.
+    Drop-in replacement for the data fetcher.
     Uses yfinance for underlying price, options chains, and ATR.
     No connection setup required — works anywhere Python runs.
     """
@@ -164,7 +164,7 @@ class YFinanceFetcher:
         # yfinance Ticker objects are cheap to create; cache them by symbol
         self._tickers: Dict[str, yf.Ticker] = {}
 
-    # ── Public API (mirrors IBKRDataFetcher) ──────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────────
 
     async def connect(self) -> bool:
         """No-op for compatibility — yfinance needs no connection."""

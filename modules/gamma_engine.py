@@ -41,6 +41,24 @@ class GammaLevel:
 
 
 @dataclass
+class IVWall:
+    strike: float
+    iv: float
+    oi: int
+    volume: int
+    score: float
+
+
+@dataclass
+class ExpectedMoveRange:
+    expected_move: float
+    upper_bound: float
+    lower_bound: float
+    closest_call_strike: float
+    closest_put_strike: float
+
+
+@dataclass
 class GammaResult:
     ticker: str
     spot: float
@@ -48,9 +66,11 @@ class GammaResult:
     put_walls: List[GammaLevel]     # top 3 support
     gamma_flip: Optional[float]     # strike where net gamma flips sign
     max_pain: float
-    pin_zones: List[Tuple[float, float]]   # (low, high) ranges
     net_gamma_profile: Dict[float, float]  # strike → net gamma exposure
     atr: float
+    iv_call_wall: Optional[IVWall] = None
+    iv_put_wall: Optional[IVWall] = None
+    expected_move: Optional[ExpectedMoveRange] = None
 
 
 # ─── Engine ───────────────────────────────────────────────────────────────────
@@ -77,8 +97,10 @@ class GammaEngine:
         put_walls   = self._compute_walls(df[df["right"] == "P"], spot, side="put")
         max_pain    = self._max_pain(df)
         flip_zone   = self._gamma_flip(df, spot)
-        pin_zones   = self._pin_zones(df, spot)
         net_profile = self._net_gamma_profile(df)
+
+        iv_call_wall, iv_put_wall = self._compute_iv_walls(df, spot)
+        expected_move = self._compute_expected_move_bounds(df, spot)
 
         return GammaResult(
             ticker=snapshot.ticker,
@@ -87,9 +109,11 @@ class GammaEngine:
             put_walls=put_walls,
             gamma_flip=flip_zone,
             max_pain=max_pain,
-            pin_zones=pin_zones,
             net_gamma_profile=net_profile,
             atr=self.atr,
+            iv_call_wall=iv_call_wall,
+            iv_put_wall=iv_put_wall,
+            expected_move=expected_move,
         )
 
     # ── DataFrame builder ─────────────────────────────────────────────────────
@@ -247,33 +271,106 @@ class GammaEngine:
                 profile[s] = profile.get(s, 0) - g
         return dict(sorted(profile.items()))
 
-    # ── Pin Zones ─────────────────────────────────────────────────────────────
-    def _pin_zones(
-        self, df: pd.DataFrame, spot: float, top_n: int = 2
-    ) -> List[Tuple[float, float]]:
+
+
+    # ── IV Wall detection (Option 1) ──────────────────────────────────────────
+    def _compute_iv_walls(
+        self, df: pd.DataFrame, spot: float
+    ) -> Tuple[Optional[IVWall], Optional[IVWall]]:
         """
-        Identify price magnet zones where both call and put OI clusters
-        overlap — high pinning probability near expiry.
+        Calculates IV Walls based on volatility-weighted exposure.
+        Score = iv * (oi + volume)
+        Filter out strikes with low open interest to avoid illiquid options.
         """
         if df.empty:
-            return []
+            return None, None
 
-        # Strikes within 1 ATR of spot
-        nearby = df[df["strike"].between(spot - self.atr, spot + self.atr)]
-        if nearby.empty:
-            return []
+        # Filter out rows with low OI (e.g. < 50) to ignore noise
+        df_filtered = df[df["oi"] >= 50].copy()
+        if df_filtered.empty:
+            df_filtered = df.copy()
 
-        # Combined OI heatmap
-        oi_map = nearby.groupby("strike")["oi"].sum()
-        if oi_map.empty:
-            return []
+        df_filtered["iv_score"] = df_filtered["iv"] * (df_filtered["oi"] + df_filtered["volume"])
 
-        top_strikes = oi_map.nlargest(top_n).index.tolist()
-        half_width = max(self.atr * 0.1, 0.5)
+        calls = df_filtered[(df_filtered["right"] == "C") & (df_filtered["strike"] >= spot)]
+        puts = df_filtered[(df_filtered["right"] == "P") & (df_filtered["strike"] <= spot)]
 
-        zones = [(round(s - half_width, 2), round(s + half_width, 2))
-                 for s in sorted(top_strikes)]
-        return zones
+        call_wall = None
+        put_wall = None
+
+        if not calls.empty:
+            top_call = calls.sort_values("iv_score", ascending=False).iloc[0]
+            call_wall = IVWall(
+                strike=float(top_call["strike"]),
+                iv=float(top_call["iv"]),
+                oi=int(top_call["oi"]),
+                volume=int(top_call["volume"]),
+                score=float(top_call["iv_score"]),
+            )
+
+        if not puts.empty:
+            top_put = puts.sort_values("iv_score", ascending=False).iloc[0]
+            put_wall = IVWall(
+                strike=float(top_put["strike"]),
+                iv=float(top_put["iv"]),
+                oi=int(top_put["oi"]),
+                volume=int(top_put["volume"]),
+                score=float(top_put["iv_score"]),
+            )
+
+        return call_wall, put_wall
+
+    # ── Expected Move Range (Option 2) ────────────────────────────────────────
+    def _compute_expected_move_bounds(
+        self, df: pd.DataFrame, spot: float
+    ) -> Optional[ExpectedMoveRange]:
+        """
+        Calculates Daily Expected Move using ATM IV, and finds the closest strikes with highest OI.
+        """
+        if df.empty:
+            return None
+
+        # ATM IV is average IV within 1% of spot
+        atm_options = df[df["strike"].between(spot * 0.99, spot * 1.01)]
+        if atm_options.empty:
+            atm_options = df.copy()
+
+        atm_iv = atm_options["iv"].mean()
+        if not atm_iv or atm_iv <= 0:
+            atm_iv = 0.15
+
+        # Expected Move (daily) = Spot * ATM_IV * sqrt(1/252)
+        expected_move = spot * atm_iv * math.sqrt(1 / 252)
+        upper_bound = spot + expected_move
+        lower_bound = spot - expected_move
+
+        # Call Expected Move Wall (strike >= spot closest to upper_bound with highest OI among 5 closest)
+        calls = df[(df["right"] == "C") & (df["strike"] >= spot)]
+        closest_call_strike = spot
+        if not calls.empty:
+            calls = calls.copy()
+            calls["proximity"] = (calls["strike"] - upper_bound).abs()
+            top_proximity_calls = calls.sort_values("proximity").head(5)
+            if not top_proximity_calls.empty:
+                closest_call_strike = float(top_proximity_calls.sort_values("oi", ascending=False).iloc[0]["strike"])
+
+        # Put Expected Move Wall (strike <= spot closest to lower_bound with highest OI among 5 closest)
+        puts = df[(df["right"] == "P") & (df["strike"] <= spot)]
+        closest_put_strike = spot
+        if not puts.empty:
+            puts = puts.copy()
+            puts["proximity"] = (puts["strike"] - lower_bound).abs()
+            top_proximity_puts = puts.sort_values("proximity").head(5)
+            if not top_proximity_puts.empty:
+                closest_put_strike = float(top_proximity_puts.sort_values("oi", ascending=False).iloc[0]["strike"])
+
+        return ExpectedMoveRange(
+            expected_move=round(expected_move, 2),
+            upper_bound=round(upper_bound, 2),
+            lower_bound=round(lower_bound, 2),
+            closest_call_strike=closest_call_strike,
+            closest_put_strike=closest_put_strike,
+        )
 
     # ── Liquidity Heatmap ─────────────────────────────────────────────────────
     def liquidity_heatmap(self, snapshot: ChainSnapshot) -> Dict[float, float]:

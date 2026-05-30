@@ -3,7 +3,7 @@ backtest.py
 ───────────
 Offline backtest utility.
 
-Reads logged bias signals from SQLite, fetches historical closes (via IBKR),
+Reads logged bias signals from SQLite, fetches historical closes,
 and computes directional accuracy of the 0DTE bias engine.
 
 Usage:
@@ -33,10 +33,10 @@ async def run_backtest(ticker: str, days: int, csv_path: str | None = None):
     print(f"  0DTE Bias Backtest  ·  {ticker}  ·  {days}d lookback")
     print(f"{'═' * 60}")
 
-    # Connect IBKR for historical data
+    # Connect to data fetcher for historical data
     connected = await fetcher.connect()
     if not connected:
-        print("⚠️  IBKR not available — using DB-only results")
+        print("⚠️  Data fetcher not available — using DB-only results")
 
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
@@ -58,7 +58,7 @@ async def run_backtest(ticker: str, days: int, csv_path: str | None = None):
 
     results = []
     for day, direction, confidence, spot_open in rows:
-        # Fetch next available trading day close from IBKR hist data
+        # Fetch next available trading day close from historical data
         # In a production system, this would pull from an EOD data source
         actual_move = None  # placeholder — set via record_daily_outcome in bot
         results.append({
