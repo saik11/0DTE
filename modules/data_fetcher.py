@@ -53,6 +53,8 @@ class OptionRow:
     iv: float             # decimal e.g. 0.25
     delta: float
     gamma: float
+    vanna: float
+    charm: float
     underlying_price: float
     timestamp: float = field(default_factory=time.time)
 
@@ -118,20 +120,29 @@ class TTLCache:
 def _bs_greeks(
     spot: float, strike: float, iv: float,
     t_years: float, right: str
-) -> Tuple[float, float]:
+) -> Tuple[float, float, float, float]:
     """
-    Returns (delta, gamma) using Black-Scholes.
+    Returns (delta, gamma, vanna, charm) using Black-Scholes.
     t_years: time to expiry in years (e.g. 0.5/252 for ~half a trading day)
     """
     if iv <= 0 or t_years <= 0:
-        return (0.5 if right == "C" else -0.5), 0.0
+        return (0.5 if right == "C" else -0.5), 0.0, 0.0, 0.0
     try:
         d1 = (math.log(spot / strike) + 0.5 * iv ** 2 * t_years) / (iv * math.sqrt(t_years))
+        d2 = d1 - iv * math.sqrt(t_years)
         delta = norm.cdf(d1) if right == "C" else norm.cdf(d1) - 1.0
         gamma = norm.pdf(d1) / (spot * iv * math.sqrt(t_years))
-        return round(delta, 4), round(gamma, 6)
+        
+        # Vanna = -phi(d1) * d2 / iv
+        vanna = -norm.pdf(d1) * d2 / iv
+        
+        # Charm = phi(d1) * d2 / (2 * t_years) -> daily rate by dividing by 252
+        charm = norm.pdf(d1) * d2 / (2 * t_years)
+        charm_daily = charm / 252.0
+        
+        return round(delta, 4), round(gamma, 6), round(vanna, 4), round(charm_daily, 6)
     except Exception:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0
 
 
 def _t_years(expiry_str: str) -> float:
@@ -312,13 +323,14 @@ class YFinanceFetcher:
                     # but sometimes returns values > 5 — clamp to sane range
                     iv = max(0.01, min(iv_raw, 5.0))
 
-                    delta, gamma = _bs_greeks(price, strike, iv, t_yr, right)
+                    delta, gamma, vanna, charm = _bs_greeks(price, strike, iv, t_yr, right)
 
                     rows.append(OptionRow(
                         strike=strike, right=right, expiry=exp_yyyymmdd,
                         bid=round(bid, 2), ask=round(ask, 2), mid=round(mid, 2),
                         volume=vol, open_interest=oi,
                         iv=round(iv, 4), delta=delta, gamma=gamma,
+                        vanna=vanna, charm=charm,
                         underlying_price=price,
                     ))
 

@@ -71,6 +71,8 @@ class GammaResult:
     iv_call_wall: Optional[IVWall] = None
     iv_put_wall: Optional[IVWall] = None
     expected_move: Optional[ExpectedMoveRange] = None
+    dealer_vanna: float = 0.0
+    dealer_charm: float = 0.0
 
 
 # ─── Engine ───────────────────────────────────────────────────────────────────
@@ -102,6 +104,10 @@ class GammaEngine:
         iv_call_wall, iv_put_wall = self._compute_iv_walls(df, spot)
         expected_move = self._compute_expected_move_bounds(df, spot)
 
+        # Dealer Vanna and Charm exposures (assuming short calls/puts)
+        dealer_vanna = sum(-o.vanna * o.open_interest * 100 for o in options)
+        dealer_charm = sum(-o.charm * o.open_interest * 100 for o in options)
+
         return GammaResult(
             ticker=snapshot.ticker,
             spot=spot,
@@ -114,6 +120,8 @@ class GammaEngine:
             iv_call_wall=iv_call_wall,
             iv_put_wall=iv_put_wall,
             expected_move=expected_move,
+            dealer_vanna=round(dealer_vanna, 2),
+            dealer_charm=round(dealer_charm, 2),
         )
 
     # ── DataFrame builder ─────────────────────────────────────────────────────
@@ -138,6 +146,8 @@ class GammaEngine:
                 "iv":          o.iv,
                 "mid":         o.mid,
                 "gamma":       o.gamma,
+                "vanna":       o.vanna,
+                "charm":       o.charm,
                 "distance":    distance,
                 "decay":       decay,
                 "gamma_score": gamma_score,

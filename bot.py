@@ -218,7 +218,7 @@ def build_gamma_embed(gamma: GammaResult) -> discord.Embed:
             inline=False
         )
 
-    if gamma.iv_call_wall or gamma.iv_put_wall:
+    if gamma.iv_call_wall or gamma.iv_put_wall or gamma.dealer_vanna != 0:
         iv_lines = []
         if gamma.iv_call_wall:
             cw = gamma.iv_call_wall
@@ -226,8 +226,14 @@ def build_gamma_embed(gamma: GammaResult) -> discord.Embed:
         if gamma.iv_put_wall:
             pw = gamma.iv_put_wall
             iv_lines.append(f"🔴 **Put IV Wall**: **${fmt_strike(pw.strike)}** (IV: {pw.iv:.1%}, OI: {pw.oi:,})")
+        
+        vanna_fmt = f"{gamma.dealer_vanna/1e3:+.1f}k" if abs(gamma.dealer_vanna) < 1e6 else f"{gamma.dealer_vanna/1e6:+.1f}M"
+        charm_fmt = f"{gamma.dealer_charm/1e3:+.1f}k" if abs(gamma.dealer_charm) < 1e6 else f"{gamma.dealer_charm/1e6:+.1f}M"
+        iv_lines.append(f"🛡️ **Dealer Vanna Exposure**: **{vanna_fmt}** shares / 1% vol change")
+        iv_lines.append(f"⏳ **Dealer Charm Exposure**: **{charm_fmt}** shares decay / day")
+        
         embed.add_field(
-            name="⚡ Volatility Skew Walls (OTM Boundaries)",
+            name="⚡ Volatility Skew & Greeks Exposure",
             value="\n".join(iv_lines),
             inline=False
         )
@@ -327,7 +333,7 @@ def build_full_embed(
     embed.add_field(name="ATR",          value=f"${gamma.atr:.2f}", inline=True)
 
     # Volatility / Expected Move Boundaries
-    if gamma.expected_move or gamma.iv_call_wall or gamma.iv_put_wall:
+    if gamma.expected_move or gamma.iv_call_wall or gamma.iv_put_wall or gamma.dealer_vanna != 0:
         v_lines = []
         if gamma.expected_move:
             em = gamma.expected_move
@@ -340,6 +346,12 @@ def build_full_embed(
             if gamma.iv_put_wall:
                 iv_w.append(f"🔴 Put **${fmt_strike(gamma.iv_put_wall.strike)}**")
             v_lines.append(f"⚡ **IV Skew Boundaries**: " + " | ".join(iv_w))
+        
+        vanna_fmt = f"{gamma.dealer_vanna/1e3:+.1f}k" if abs(gamma.dealer_vanna) < 1e6 else f"{gamma.dealer_vanna/1e6:+.1f}M"
+        charm_fmt = f"{gamma.dealer_charm/1e3:+.1f}k" if abs(gamma.dealer_charm) < 1e6 else f"{gamma.dealer_charm/1e6:+.1f}M"
+        v_lines.append(f"🛡️ **Dealer Vanna**: **{vanna_fmt}** shares / 1% vol change")
+        v_lines.append(f"⏳ **Dealer Charm**: **{charm_fmt}** shares decay / day")
+        
         embed.add_field(name="📐 Volatility & Expected Range", value="\n".join(v_lines), inline=False)
 
     embed.set_footer(text="0DTE Dashboard")
@@ -472,15 +484,19 @@ async def cmd_0dte(ctx: commands.Context, ticker: str = "SPY"):
                     inline=False
                 )
 
-            if gamma.iv_call_wall or gamma.iv_put_wall:
+            if gamma.iv_call_wall or gamma.iv_put_wall or gamma.dealer_vanna != 0:
                 iv_w = []
                 if gamma.iv_call_wall:
                     iv_w.append(f"🟢 Call **${fmt_strike(gamma.iv_call_wall.strike)}** (IV {gamma.iv_call_wall.iv:.1%})")
                 if gamma.iv_put_wall:
                     iv_w.append(f"🔴 Put **${fmt_strike(gamma.iv_put_wall.strike)}** (IV {gamma.iv_put_wall.iv:.1%})")
+                
+                vanna_fmt = f"{gamma.dealer_vanna/1e3:+.1f}k" if abs(gamma.dealer_vanna) < 1e6 else f"{gamma.dealer_vanna/1e6:+.1f}M"
+                charm_fmt = f"{gamma.dealer_charm/1e3:+.1f}k" if abs(gamma.dealer_charm) < 1e6 else f"{gamma.dealer_charm/1e6:+.1f}M"
+                
                 embed.add_field(
-                    name="⚡ IV Skew Walls",
-                    value="  ·  ".join(iv_w),
+                    name="⚡ IV Skew & Greeks Exposure",
+                    value="  ·  ".join(iv_w) + f"\n🛡️ Dealer Vanna: **{vanna_fmt}** | ⏳ Charm: **{charm_fmt}**",
                     inline=False
                 )
 

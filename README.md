@@ -17,8 +17,8 @@ odte-bot/
 ├── .env.example            # Copy to .env and add your Discord token
 └── modules/
     ├── data_fetcher.py     # yfinance data engine + caching
-    ├── gamma_engine.py     # Gamma walls, max pain, flip zone
-    ├── bias_engine.py      # 5-signal directional bias score
+    ├── gamma_engine.py     # Gamma walls, IV walls, Expected Move, Max Pain, Flip Zone, Vanna/Charm exposure
+    ├── bias_engine.py      # 6-signal directional bias score (inc. Vanna/Charm drift)
     ├── flow_engine.py      # Unusual volume, IV bursts, sweeps
     └── database.py         # SQLite signal logger
 ```
@@ -85,29 +85,31 @@ Supported tickers: `SPY`, `QQQ`, `SPX`
 - Underlying price from `fast_info.last_price`
 - Options chain from `ticker.option_chain(date)`
 - IV, volume, OI direct from yfinance
-- Delta/Gamma computed via Black-Scholes using yfinance IV
+- Delta/Gamma/Vanna/Charm computed via Black-Scholes using yfinance IV
 - ATR from 5-day daily history
 
-### Bias Engine (5 signals)
+### Bias Engine (6 signals)
 
 | Signal | Weight |
 |---|---|
-| Call/Put volume imbalance | 30% |
-| ATM strike pressure ±1% | 25% |
-| IV skew structure | 20% |
+| Call/Put volume imbalance | 25% |
+| ATM strike pressure ±1% | 20% |
+| Vanna/Charm hedging drift | 15% |
+| IV skew structure | 15% |
 | Price vs max pain | 15% |
 | OI cluster asymmetry | 10% |
 
-### Gamma Engine
+### Gamma & Volatility Engine
 
-```
-GammaScore = OI × IV × Volume × exp(−distance / ATR)
-```
+- **Gamma score**: `GammaScore = OI × IV × Volume × exp(−distance / ATR)`
+- **IV Wall score**: `IVWallScore = IV × (OI + Volume)`
+- **Expected Move**: `Expected Move = Spot * ATM IV * sqrt(1/252)`
+- **Dealer Vanna/Charm exposure**: Cumulative Greek exposures modeled assuming standard short options dealer position.
 
-Produces: call walls, put walls, gamma flip zone, max pain, pin zones.
+Produces: Call/Put Gamma Walls, Call/Put IV Skew Walls, Expected Move corridor, Max Pain, Gamma Flip zone, and Net Vanna/Charm exposure.
 
 ### Flow Engine
-Detects: unusual volume spikes, IV expansion bursts, ATM sweeps, OI clusters, pin risk zones.
+Detects: unusual volume spikes, IV expansion bursts, ATM sweeps, and OI clusters.
 
 ---
 

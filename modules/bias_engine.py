@@ -32,11 +32,12 @@ logger = logging.getLogger(__name__)
 
 # ─── Signal weights (must sum to 1.0) ────────────────────────────────────────
 SIGNAL_WEIGHTS = {
-    "volume_imbalance":  0.30,
-    "atm_pressure":      0.25,
-    "iv_structure":      0.20,
+    "volume_imbalance":  0.25,
+    "atm_pressure":      0.20,
+    "iv_structure":      0.15,
     "max_pain_position": 0.15,
     "cluster_asymmetry": 0.10,
+    "vanna_charm_drift": 0.15,
 }
 
 
@@ -84,14 +85,14 @@ class BiasEngine:
         calls = [o for o in options if o.right == "C"]
         puts  = [o for o in options if o.right == "P"]
 
-        # Individual signals
         sig_vol  = self._signal_volume_imbalance(calls, puts)
         sig_atm  = self._signal_atm_pressure(calls, puts, spot)
         sig_iv   = self._signal_iv_structure(calls, puts, spot)
         sig_pain = self._signal_max_pain_position(spot, gamma_result)
         sig_clus = self._signal_cluster_asymmetry(calls, puts, spot)
+        sig_drift = self._signal_vanna_charm_drift(options, gamma_result)
 
-        signals = [sig_vol, sig_atm, sig_iv, sig_pain, sig_clus]
+        signals = [sig_vol, sig_atm, sig_iv, sig_pain, sig_clus, sig_drift]
 
         # Weighted composite score [-1, +1]
         composite = sum(s.contribution for s in signals)
@@ -277,6 +278,45 @@ class BiasEngine:
         )
 
     # ── Classification ────────────────────────────────────────────────────────
+    # ── Signal 6: Vanna/Charm Drift ───────────────────────────────────────────
+    def _signal_vanna_charm_drift(
+        self, options: List[OptionRow], gamma_result: Optional[GammaResult]
+    ) -> SignalBreakdown:
+        w = SIGNAL_WEIGHTS["vanna_charm_drift"]
+        if not gamma_result or gamma_result.dealer_vanna == 0:
+            return SignalBreakdown(
+                name="Vanna/Charm Drift", raw_value=0.0, weight=w,
+                contribution=0.0, detail="Drift data unavailable"
+            )
+
+        vanna = gamma_result.dealer_vanna
+        charm = gamma_result.dealer_charm
+
+        # Total outstanding shares in options for scaling
+        total_oi = sum(o.open_interest for o in options)
+        total_shares = max(total_oi * 100, 1000)
+
+        # Normalized drift scores
+        # Charm: positive dealer charm means dealers sell over time (bearish) -> negative score
+        charm_score = -charm / total_shares
+
+        # Vanna: positive dealer vanna means dealers sell as IV rises (bearish) -> negative score
+        vanna_score = -vanna / total_shares
+
+        raw = max(-1.0, min(1.0, (charm_score + vanna_score) / 2.0))
+
+        v_text = f"Vanna: {vanna/1e3:+.1f}k" if abs(vanna) < 1e6 else f"Vanna: {vanna/1e6:+.1f}M"
+        c_text = f"Charm: {charm/1e3:+.1f}k" if abs(charm) < 1e6 else f"Charm: {charm/1e6:+.1f}M"
+        detail = f"{v_text} | {c_text} (Net bias: {'Bullish' if raw > 0.05 else 'Bearish' if raw < -0.05 else 'Neutral'})"
+
+        return SignalBreakdown(
+            name="Vanna/Charm Drift",
+            raw_value=round(raw, 4),
+            weight=w,
+            contribution=round(raw * w, 4),
+            detail=detail
+        )
+
     def _classify(self, composite: float) -> Tuple[str, int]:
         """Map [-1, 1] composite to direction and 0–100 confidence."""
         confidence = int(abs(composite) * 100)

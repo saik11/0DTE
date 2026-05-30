@@ -7,7 +7,6 @@ Detects and flags in real-time:
   • Unusual volume spikes (volume >> OI)
   • Aggressive ATM call / put buying
   • IV expansion bursts
-  • Pinning risk zones
   • Trend continuation vs reversal probability
   • Liquidity heatmap
 """
@@ -37,7 +36,6 @@ class FlowType(str, Enum):
     UNUSUAL_CALL_BUY  = "Unusual Call Buying"
     UNUSUAL_PUT_BUY   = "Unusual Put Buying"
     IV_EXPANSION      = "IV Expansion Burst"
-    PIN_RISK          = "Pin Risk Zone"
     CALL_SWEEP        = "Call Sweep (aggressive)"
     PUT_SWEEP         = "Put Sweep (aggressive)"
     OI_CLUSTER        = "OI Concentration"
@@ -91,7 +89,6 @@ class FlowEngine:
         signals += self._detect_unusual_volume(calls, "C")
         signals += self._detect_unusual_volume(puts,  "P")
         signals += self._detect_iv_expansion(options, spot)
-        signals += self._detect_pin_risk(options, spot)
         signals += self._detect_sweeps(calls, puts, spot)
         signals += self._detect_oi_clusters(options, spot)
 
@@ -222,38 +219,7 @@ class FlowEngine:
                     ))
         return signals
 
-    # ── Pin Risk ───────────────────────────────────────────────────────────────
-    def _detect_pin_risk(
-        self, options: List[OptionRow], spot: float
-    ) -> List[FlowSignal]:
-        """
-        High combined OI near current spot = magnetic pin zone.
-        """
-        nearby = [o for o in options if abs(o.strike - spot) / spot < 0.008]
-        if not nearby:
-            return []
 
-        oi_by_strike: Dict[float, int] = {}
-        for o in nearby:
-            oi_by_strike[o.strike] = oi_by_strike.get(o.strike, 0) + o.open_interest
-
-        top_pin = max(oi_by_strike, key=oi_by_strike.get)
-        top_oi  = oi_by_strike[top_pin]
-
-        if top_oi < 1000:
-            return []
-
-        return [FlowSignal(
-            type     = FlowType.PIN_RISK,
-            strike   = top_pin,
-            severity = "🔶 Medium" if top_oi < 10_000 else "🚨 High",
-            detail   = (f"Pin magnet at {top_pin:.0f} with {top_oi:,} combined OI "
-                        f"({abs(top_pin - spot):.2f} pts from spot)"),
-            volume   = 0,
-            oi       = top_oi,
-            iv       = 0.0,
-            vol_oi_ratio = 0.0,
-        )]
 
     # ── OI Cluster ────────────────────────────────────────────────────────────
     def _detect_oi_clusters(
