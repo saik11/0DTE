@@ -1,4 +1,4 @@
-#  0DTE Discord Bot — 
+#  0DTE Discord Bot
 
 A Discord bot that pulls Delayed 0DTE options data via yfinance and delivers
 gamma walls, directional bias, and flow signals directly in Discord.
